@@ -1,15 +1,19 @@
 """
-topBitSetTerminatedArray
-anonymousNbt
-anonOptionalNbt
-"""
+Reasons why i hate protodef
+1. they dont have mapper in native for some reason
+2. they randomly switcht from hex to normal numbers in mapper type
+3. doesnt use snake_case
+4. uses strings for all key (ok this is kinda unfair but still annyoing)
 
+
+"""
+from io import BytesIO
 import struct
 import uuid
 import nbt
+import nbt.nbt
 
 MAX_VARNUM_LEN = 10
-
 
 def to_snake_case(s: str):
     out = ""
@@ -25,6 +29,7 @@ class buffer:
     data = b""
     pos = 0
     types = {}
+    container_stack = []
 
     def __init__(self, data: bytes | None = None, types=None) -> None:
         if data:
@@ -34,6 +39,12 @@ class buffer:
 
     def pack_bytes(self, data):
         self.data += data
+
+    def peek(self, method, *args, **kwargs):
+        saved_pos = self.pos
+        data = method(*args, **kwargs)
+        self.pos = saved_pos
+        return data
 
     def __len__(self):
         return len(self.data)
@@ -191,10 +202,41 @@ class buffer:
     def pack_rest_buffer(self, data):
         self.pack_bytes(data)
 
+    def unpack_anonymous_nbt(self):
+        buff = BytesIO(self.data[self.pos:])
+        data = nbt.nbt.NBTFile(buffer=buff, network=True)
+        self.pos += buff.tell()
+        return data
+    
+    def pack_anonymous_nbt(self, data: nbt.nbt.NBTFile):
+        buff = BytesIO()
+        data.write_file(buffer=buff, network=True)
+        self.pack_bytes(buff.read())
+
+    def unpack_anon_optional_nbt(self):
+        if not self.peek(self.unpack_u8):
+            self.unpack_u8()
+            return None
+        return self.unpack_anonymous_nbt()
+    
+    def pack_anon_optional_nbt(self, data):
+        if not data:
+            self.pack_u8(0)
+            return
+        self.pack_anonymous_nbt(data)
+
     # protodef stuff
 
     def get_var(self, path):
-        raise NotImplementedError("naaawww")
+        container_stack_index = -1
+        data = self.container_stack[container_stack_index]
+        for part in path.split("/"):
+            if part == "..":
+                container_stack_index -= 1
+                data = self.container_stack[container_stack_index]                
+            else:
+                data[part] = data
+        return data
 
     def unpack(self, protodef):
         data = None
@@ -230,18 +272,23 @@ class buffer:
 
     def unpack_container(self, protodef):
         ret = {}
+        self.container_stack.append(ret)
         for field in protodef:
             data = self.unpack(field["type"])
             if field.get("anon", False):
                 ret.update(data)
             else:
                 ret[field["name"]] = data
+        self.container_stack.pop()
 
         return ret
 
     def pack_container(self, protodef, data):
+        self.container_stack.append(data)
         for field in protodef:
             self.pack(field["type"], data[field["name"]])
+        self.container_stack.pop()
+
 
     def unpack_switch(self, protodef):
         return self.unpack(protodef["fields"][str(self.get_var(protodef["compareTo"]))])
@@ -348,6 +395,50 @@ class buffer:
             ret[index] = self.unpack(protodef["type"])
         return ret
     
+    def unpack_top_bit_set_terminated_array(self, protodef):
+        ret = []
+        while True:
+            saved_pos = self.pos
+            saved_byte = self.data[self.pos]
+            self.data[self.pos] &= 0x7F
+            ret.append(self.unpack(protodef["type"]))
+            self.data[saved_pos]
+            if saved_byte & 0x80:
+                break
+        
+        return ret
+    
+    def pack_top_bit_set_terminated_array(self, protodef, data):
+        for i, element in enumerate(data):
+            old_pos = len(self)
+            self.pack(protodef["type"], element)
+            if len(element) - 1 == i:
+                self.data[old_pos] |= 0x80
+
+    def unpack_mapper(self, protodef):
+        data = getattr(self, "unpack_" + protodef["type"])()
+        for mapping in protodef["mappings"]:
+            if eval(mapping) == data: # ik eval bad BUUUUTTT no
+                return protodef["mappings"][mapping]
+
+    def pack_mapper(self, protodef, data):
+        for mapping in protodef["mappings"]:
+            if protodef["mappings"][mapping] == data:
+                getattr(self, "pack_" + protodef["type"])(eval(mapping))
+
+class connection:
+    def __init__(self, proto, state, direction) -> None:
+        self._proto = proto
+        self._state = state
+        self._direction = direction
+    
+    def set_state(self, state):
+        self._state = state
+        types = self._proto["types"]
+        types.update(self._proto[self._state][self._direction]["types"])
+        return types
+    
+
 if __name__ == "__main__":
     import json
 
