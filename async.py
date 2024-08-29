@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import zlib
 from buffer import Buffer
 
@@ -10,19 +11,20 @@ class Protocol(asyncio.Protocol):
     cipher = None
     types2server = {}
     types2client = {}
-
+    
     def __init__(self, proto):
         self.transport = None
         self.proto = proto
         self.loop = asyncio.get_event_loop()
         self.ready2recv = asyncio.Event()
+        self.disconnected = asyncio.Event()
 
     def switch_state(self, state):
         self.state = state
         self.types2server = self.proto["types"].copy()
         self.types2client = self.proto["types"].copy()
         self.types2server.update(self.proto[state]["toServer"]["types"])
-        self.types2client.update(self.proto[state]["toServer"]["types"])
+        self.types2client.update(self.proto[state]["toClient"]["types"])
 
     # callbacks
     def packet_unhadeled(self, packet_name, data):
@@ -59,17 +61,23 @@ class Protocol(asyncio.Protocol):
         self.ready2recv.set()
 
     def connection_lost(self, exc):
-        print("Connection Lost")
-        self.loop.stop()
+        self.disconnected.set()
 
-    async def data_received(self, data):
+    def data_received(self, data):
+        asyncio.create_task(self.handle_data_received(data))
+
+    async def handle_data_received(self, data):
         await self.ready2recv.wait()
         # TODO: Add encryption
         buff = Buffer(data, types=self.types2client)
-        buff = Buffer(buff.unpack_bytes(buff.unpack_varint()))
-        # TODO: Add compression
+        buff = Buffer(buff.unpack_bytes(buff.unpack_varint()), types=self.types2client)
+        if self.compression_threshold >= 0:
+            uncompressed_length = buff.unpack_varint()
+            if uncompressed_length > 0:
+                buff = Buffer(zlib.decompress(buff.unpack_bytes()), types=self.types2client)
         data = buff.unpack("packet")
-        method = getattr(self, f"packet_{data["name"]}")
+        data["params"]["raw"] = buff.data
+        method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
         if method:
             method(data["params"])
         else:
@@ -82,8 +90,35 @@ class StatusClient(Protocol):
         self.switch_state("status")
         self.send("ping_start")
 
-    def packet_status_respose(self, data):
-        print(data)
+    def packet_status_server_info(self, data):
+        self.status = json.loads(data["response"])
+        self.transport.close()
+
+class Client(Protocol):
+    def on_connection(self):
+        self.switch_state("handshaking")
+        self.send("set_protocol", {'protocolVersion': 765, 'serverHost': 'localhost', 'serverPort': 25565, 'nextState': 2})
+        self.switch_state("login")
+        self.send("login_start", {"username": "sigma", "playerUUID": "3632330d373742708e8f270e581c45db"})
+
+    def packet_unhadeled(self, packet_name, data: dict):
+        data.pop("raw")
+        print(packet_name, data)
+
+    def packet_login_compress(self, data):
+        self.compression_threshold = data["threshold"]
+
+    def packet_login_success(self, data):
+        self.send("login_acknowledged")
+        self.switch_state("configuration")
+
+    def packet_finish_configuration(self, data):
+        self.send("finish_configuration")
+        self.switch_state("play")
+
+    def packet_configuration_tags(self, data):
+        pass # i have no idea what this is but it spamms my terminal so GET OUT
+
 
 async def main():
     with open("minecraft-data/data/pc/1.20.3/protocol.json", "r") as f:
@@ -91,8 +126,10 @@ async def main():
         proto["types"]["mapper"] = "native" # god I FUCKING HATE PROTODEF
 
     loop = asyncio.get_running_loop()
-    await loop.create_connection(lambda: StatusClient(proto=proto), "127.0.0.1", 25565)
-    await asyncio.Future()
+    client = Client(proto=proto)
+    
+    await loop.create_connection(lambda: client, "127.0.0.1", 25565)
+    await client.disconnected.wait()
 
 if __name__ == "__main__":
     asyncio.run(main())

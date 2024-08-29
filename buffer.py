@@ -4,14 +4,13 @@ Reasons why i hate protodef
 2. they randomly switcht from hex to normal numbers in mapper type
 3. doesnt use snake_case
 4. uses strings for all key (ok this is kinda unfair but still annyoing)
-
+5. UUID being UUID and not uuid
 
 """
 from io import BytesIO
 import struct
 import uuid
-import nbt
-import nbt.nbt
+from nbt.nbt import NBTFile
 
 MAX_VARNUM_LEN = 10
 
@@ -140,11 +139,11 @@ class Buffer:
     def pack_void(self):
         pass
 
-    def unpack_uuid(self):
-        return uuid.UUID(bytes=self.unpack_bytes(16))
+    def unpack_UUID(self):
+        return uuid.UUID(bytes=self.unpack_bytes(16)).hex
 
-    def pack_uuid(self, data: uuid.UUID):
-        self.pack_bytes(data.bytes)
+    def pack_UUID(self, data):
+        self.pack_bytes(uuid.UUID(hex=data).bytes)
 
     def pack_varnum(self, number, max_bits):
         number_min = -1 << (max_bits - 1)
@@ -196,19 +195,19 @@ class Buffer:
     def pack_varlong(self, data):
         self.pack_varnum(data, 64)
 
-    def unpack_rest_buffer(self):
+    def unpack_restBuffer(self):
         return self.unpack_bytes()
     
-    def pack_rest_buffer(self, data):
+    def pack_restBuffer(self, data):
         self.pack_bytes(data)
 
-    def unpack_anonymous_nbt(self):
+    def unpack_anonymousNbt(self):
         buff = BytesIO(self.data[self.pos:])
-        data = nbt.nbt.NBTFile(buffer=buff, network=True)
+        data = NBTFile(buffer=buff, network=True)
         self.pos += buff.tell()
         return data
     
-    def pack_anonymous_nbt(self, data: nbt.nbt.NBTFile):
+    def pack_anonymousNbt(self, data):
         buff = BytesIO()
         data.write_file(buffer=buff, network=True)
         self.pack_bytes(buff.read())
@@ -247,7 +246,7 @@ class Buffer:
 
         protodef = self.types[type_name]
         if protodef == "native":
-            method = getattr(self, "unpack_" + to_snake_case(type_name))
+            method = getattr(self, "unpack_" + type_name)
             if data is not None:
                 return method(data)
             return method()
@@ -310,8 +309,8 @@ class Buffer:
             return self.unpack(protodef)
 
     def pack_option(self, protodef, data):
-        self.pack_bool(bool(data))
-        if data:
+        self.pack_bool(False if data is None else True)
+        if data is not None:
             self.pack(protodef, data)
 
     def unpack_bitfield(self, protodef):
