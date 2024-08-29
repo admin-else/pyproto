@@ -25,7 +25,7 @@ def to_snake_case(s: str):
     return out
 
 
-class buffer:
+class Buffer:
     data = b""
     pos = 0
     types = {}
@@ -50,11 +50,11 @@ class buffer:
         return len(self.data)
 
     def unpack_bytes(self, lenght=None):
-        if len(self) - self.pos < lenght:
+        if lenght and len(self) - self.pos < lenght:
             raise IndexError("buffer not big egnouth")
 
         data = self.data[self.pos : self.pos + lenght if lenght else None]
-        self.pos += lenght if lenght else len(self)
+        self.pos = self.pos+lenght if lenght else len(self)
         return data
 
     def pack_c(self, fmt, *fields):
@@ -235,7 +235,7 @@ class buffer:
                 container_stack_index -= 1
                 data = self.container_stack[container_stack_index]                
             else:
-                data[part] = data
+                data = data[part]
         return data
 
     def unpack(self, protodef):
@@ -248,7 +248,7 @@ class buffer:
         protodef = self.types[type_name]
         if protodef == "native":
             method = getattr(self, "unpack_" + to_snake_case(type_name))
-            if data:
+            if data is not None:
                 return method(data)
             return method()
         else:
@@ -264,7 +264,7 @@ class buffer:
         protodef = self.types[type_name]
         if protodef == "native":
             method = getattr(self, "pack_" + type_name)
-            if upacked_protodef:
+            if upacked_protodef is not None:
                 return method(upacked_protodef, data)
             return method(data)
         else:
@@ -294,7 +294,8 @@ class buffer:
         return self.unpack(protodef["fields"][str(self.get_var(protodef["compareTo"]))])
 
     def pack_switch(self, protodef, data):
-        self.pack(protodef["fields"][str(self.get_var(protodef["compareTo"]))], data)
+        val = str(self.get_var(protodef["compareTo"]))
+        self.pack(protodef["fields"][val], data)
 
     def pack_pstring(self, protodef, data):
         getattr(self, "pack_" + protodef["countType"])(len(data))
@@ -426,33 +427,3 @@ class buffer:
             if protodef["mappings"][mapping] == data:
                 getattr(self, "pack_" + protodef["type"])(eval(mapping))
 
-class connection:
-    def __init__(self, proto, state, direction) -> None:
-        self._proto = proto
-        self._state = state
-        self._direction = direction
-    
-    def set_state(self, state):
-        self._state = state
-        types = self._proto["types"]
-        types.update(self._proto[self._state][self._direction]["types"])
-        return types
-    
-
-if __name__ == "__main__":
-    import json
-
-    with open("minecraft-data/data/pc/1.20.3/protocol.json", "r") as f:
-        proto = json.load(f)
-
-    handshake = buffer(b"\375\005\tlocalhostc\335\001", proto["types"])
-    print(handshake.data)
-    data = handshake.unpack(
-        proto["handshaking"]["toServer"]["types"]["packet_set_protocol"]
-    )
-    print(data)
-    newbuffer = buffer(types=proto["types"])
-    newbuffer.pack(
-        proto["handshaking"]["toServer"]["types"]["packet_set_protocol"], data
-    )
-    print(newbuffer.data)
