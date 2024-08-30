@@ -1,6 +1,5 @@
 import asyncio
 import json
-import sys
 import zlib
 from buffer import Buffer
 
@@ -18,6 +17,7 @@ class Protocol(asyncio.Protocol):
         self.loop = asyncio.get_event_loop()
         self.ready2recv = asyncio.Event()
         self.disconnected = asyncio.Event()
+        self.recvbuff = Buffer()
 
     def switch_state(self, state):
         self.state = state
@@ -53,6 +53,7 @@ class Protocol(asyncio.Protocol):
         return b3.unpack_bytes()
 
     def send(self, packet_name, data = None):
+        print("->",packet_name)
         self.transport.write(self.pack_data({"name": packet_name, "params": data}))
 
     def connection_made(self, transport):
@@ -69,14 +70,27 @@ class Protocol(asyncio.Protocol):
     async def handle_data_received(self, data):
         await self.ready2recv.wait()
         # TODO: Add encryption
-        buff = Buffer(data, types=self.types2client)
+        data = Buffer(data)
+
+        if not self.recvbuff.pos:
+            self.recvbuff.pos = data.unpack_varint() # this is stupid but i can do it
+
+        self.recvbuff.pack_bytes(data.unpack_bytes())
+
+        if len(self.recvbuff) != self.recvbuff.pos:
+            return
+        
+        buff = Buffer(self.recvbuff.data, types=self.types2client)
+        self.recvbuff.reset()
         buff = Buffer(buff.unpack_bytes(buff.unpack_varint()), types=self.types2client)
         if self.compression_threshold >= 0:
             uncompressed_length = buff.unpack_varint()
             if uncompressed_length > 0:
                 buff = Buffer(zlib.decompress(buff.unpack_bytes()), types=self.types2client)
         data = buff.unpack("packet")
-        data["params"]["raw"] = buff.data
+
+        print("<-",data["name"])
+
         method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
         if method:
             method(data["params"])
@@ -99,7 +113,7 @@ class Client(Protocol):
         self.switch_state("handshaking")
         self.send("set_protocol", {'protocolVersion': 765, 'serverHost': 'localhost', 'serverPort': 25565, 'nextState': 2})
         self.switch_state("login")
-        self.send("login_start", {"username": "sigma", "playerUUID": "3632330d373742708e8f270e581c45db"})
+        self.send("login_start", {"username": "sigma", "playerUUID": "00000000-0000-0000-0000-000000000000"})
 
     def packet_unhadeled(self, packet_name, data: dict):
         data.pop("raw")
@@ -117,6 +131,7 @@ class Client(Protocol):
         self.switch_state("play")
 
     def packet_configuration_tags(self, data):
+        print(data)
         pass # i have no idea what this is but it spamms my terminal so GET OUT
 
 

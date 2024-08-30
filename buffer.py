@@ -10,9 +10,25 @@ Reasons why i hate protodef
 from io import BytesIO
 import struct
 import uuid
-from nbt.nbt import NBTFile
+from mutf8 import encode_modified_utf8, decode_modified_utf8
 
 MAX_VARNUM_LEN = 10
+NBT_TYPE_MAP = {
+    0: "end",
+    1: "byte",
+    2: "short",
+    3: "int",
+    4: "long",
+    5: "float",
+    6: "double",
+    7: "byte_array",
+    8: "string",
+    9: "list",
+    10: "compund",
+    11: "int_array",
+    12: "long_array"
+}
+
 
 def to_snake_case(s: str):
     out = ""
@@ -22,6 +38,9 @@ def to_snake_case(s: str):
         else:
             out += c
     return out
+
+def reverse_lookup(d, target_value):
+    return [key for key, value in d.items() if value == target_value][0]
 
 
 class Buffer:
@@ -44,6 +63,10 @@ class Buffer:
         data = method(*args, **kwargs)
         self.pos = saved_pos
         return data
+    
+    def reset(self):
+        self.data = b""
+        self.pos = 0
 
     def __len__(self):
         return len(self.data)
@@ -200,29 +223,6 @@ class Buffer:
     
     def pack_restBuffer(self, data):
         self.pack_bytes(data)
-
-    def unpack_anonymousNbt(self):
-        buff = BytesIO(self.data[self.pos:])
-        data = NBTFile(buffer=buff, network=True)
-        self.pos += buff.tell()
-        return data
-    
-    def pack_anonymousNbt(self, data):
-        buff = BytesIO()
-        data.write_file(buffer=buff, network=True)
-        self.pack_bytes(buff.read())
-
-    def unpack_anon_optional_nbt(self):
-        if not self.peek(self.unpack_u8):
-            self.unpack_u8()
-            return None
-        return self.unpack_anonymous_nbt()
-    
-    def pack_anon_optional_nbt(self, data):
-        if not data:
-            self.pack_u8(0)
-            return
-        self.pack_anonymous_nbt(data)
 
     # protodef stuff
 
@@ -426,3 +426,111 @@ class Buffer:
             if protodef["mappings"][mapping] == data:
                 getattr(self, "pack_" + protodef["type"])(eval(mapping))
 
+# NBT    
+
+    unpack_nbt_double = unpack_f64
+    unpack_nbt_short = unpack_i16
+    unpack_nbt_byte = unpack_i8
+    unpack_nbt_int = unpack_i32
+    unpack_nbt_long = unpack_i64
+    unpack_nbt_float = unpack_f32
+    pack_nbt_byte = pack_i8
+    pack_nbt_short = pack_i16
+    pack_nbt_int = pack_i32
+    pack_nbt_long = pack_i64
+    pack_nbt_float = pack_f32
+    pack_nbt_double = pack_f64
+
+    def pack_nbt_end(self, data):
+        pass
+
+    def unpack_nbt_end(self):
+        pass
+
+    def unpack_nbt_string(self):
+        return decode_modified_utf8(self.unpack_bytes(self.unpack_nbt_short()))
+    
+    def pack_nbt_string(self, data):
+        data = decode_modified_utf8(data)
+        self.pack_nbt_short(len(data))
+        self.pack_bytes(data)
+
+    def unpack_nbt_num_array(self, nbt_type):
+        unpack = getattr(self, f"unpack_nbt_{nbt_type}")
+        amount = self.unpack_nbt_int()
+        return [unpack() for _ in range(amount)]
+    
+    def pack_nbt_num_array(self, nbt_type, data):
+        self.pack_nbt_int(len(data))
+        pack = getattr(self, f"pack_nbt_{nbt_type}")
+        [pack(num) for num in data]
+
+    def unpack_nbt_byte_array(self): return self.unpack_nbt_num_array("byte")
+    def unpack_nbt_int_array(self): return self.unpack_nbt_num_array("int")
+    def unpack_nbt_long_array(self): return self.unpack_nbt_num_array("long")
+
+    def pack_nbt_byte_array(self, data): self.pack_nbt_num_array("byte", data)
+    def pack_nbt_int_array(self, data): self.pack_nbt_num_array("int", data)
+    def pack_nbt_long_array(self, data): self.pack_nbt_num_array("long", data)
+
+    def unpack_nbt_list(self):
+        nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
+        amount = self.unpack_nbt_int()
+        if nbt_type == "end" and amount > 0:
+            raise ValueError("nbt list of type end is bigger than 0 elements.")
+        unpack = getattr(self, f"unpack_nbt_{nbt_type}")
+        return [unpack() for _ in range(amount)]
+
+    def pack_nbt_list(self, data):
+        self.pack_nbt_int(len(data["value"]))
+        pack = getattr(self, f"pack_nbt_{data["type"]}")
+        [pack(data) for data in data["value"]]
+
+    def pack_nbt_compound(self, data):
+        for entry in data:
+            self.pack_nbt(entry)
+        self.pack_nbt_anon({"type": "end", "value": None})
+
+    def unpack_nbt_compound(self):
+        data = []
+        while True:
+            tag = self.unpack_nbt()
+            if tag["type"] == "end":
+                break
+            data.append(tag)
+        return data
+        
+    def pack_nbt(self, data):
+        self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
+        self.pack_nbt_string(data["name"])
+        getattr(self, f"unpack_nbt_{data["type"]}")(data["value"])
+
+    def unpack_nbt(self):
+        nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
+        return {"type": nbt_type, "name": self.unpack_nbt_string(), "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
+
+    def pack_nbt_anon(self, data):
+        self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
+        getattr(self, f"unpack_nbt_{data["type"]}")(data["value"])
+
+    def unpack_nbt_anon(self):
+        nbt_type = NBT_TYPE_MAP[self.unpack_nbt_byte()]
+        return {"type": nbt_type, "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
+
+    def unpack_anonymousNbt(self):
+        return self.unpack_nbt_anon()
+    
+    def pack_anonymousNbt(self, data):
+        self.pack_nbt_anon(data)
+
+    def unpack_anon_optional_nbt(self):
+        if not self.peek(self.unpack_nbt_byte):
+            self.unpack_nbt_byte()
+            return None
+        return self.unpack_anonymous_nbt()
+    
+    def pack_anon_optional_nbt(self, data):
+        if not data:
+            self.pack_nbt_byte(0)
+            return
+        self.pack_anonymous_nbt(data)
