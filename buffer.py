@@ -7,10 +7,9 @@ Reasons why i hate protodef
 5. UUID being UUID and not uuid
 
 """
-from io import BytesIO
 import struct
 import uuid
-from mutf8 import encode_modified_utf8, decode_modified_utf8
+from mutf8.mutf8 import encode_modified_utf8, decode_modified_utf8
 
 MAX_VARNUM_LEN = 10
 NBT_TYPE_MAP = {
@@ -24,7 +23,7 @@ NBT_TYPE_MAP = {
     7: "byte_array",
     8: "string",
     9: "list",
-    10: "compund",
+    10: "compound",
     11: "int_array",
     12: "long_array"
 }
@@ -451,7 +450,7 @@ class Buffer:
         return decode_modified_utf8(self.unpack_bytes(self.unpack_nbt_short()))
     
     def pack_nbt_string(self, data):
-        data = decode_modified_utf8(data)
+        data = encode_modified_utf8(data)
         self.pack_nbt_short(len(data))
         self.pack_bytes(data)
 
@@ -507,6 +506,8 @@ class Buffer:
 
     def unpack_nbt(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
+        if nbt_type == "end":
+            return {"type": "end", "name": None, "value": None}
         return {"type": nbt_type, "name": self.unpack_nbt_string(), "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
 
     def pack_nbt_anon(self, data):

@@ -20,6 +20,7 @@ class Protocol(asyncio.Protocol):
         self.recvbuff = Buffer()
 
     def switch_state(self, state):
+        print("state:",state)
         self.state = state
         self.types2server = self.proto["types"].copy()
         self.types2client = self.proto["types"].copy()
@@ -62,6 +63,7 @@ class Protocol(asyncio.Protocol):
         self.ready2recv.set()
 
     def connection_lost(self, exc):
+        print("disconnet", exc)
         self.disconnected.set()
 
     def data_received(self, data):
@@ -75,14 +77,16 @@ class Protocol(asyncio.Protocol):
         if not self.recvbuff.pos:
             self.recvbuff.pos = data.unpack_varint() # this is stupid but i can do it
 
-        self.recvbuff.pack_bytes(data.unpack_bytes())
+        self.recvbuff.pack_bytes(data.unpack_bytes(min(len(self.recvbuff)-self.recvbuff.pos,len(data))))
 
         if len(self.recvbuff) != self.recvbuff.pos:
             return
         
+        self.recvbuff.data = self.recvbuff.data[self.recvbuff.pos:]
+        
         buff = Buffer(self.recvbuff.data, types=self.types2client)
-        self.recvbuff.reset()
-        buff = Buffer(buff.unpack_bytes(buff.unpack_varint()), types=self.types2client)
+
+    def consistent_data(self, buff):
         if self.compression_threshold >= 0:
             uncompressed_length = buff.unpack_varint()
             if uncompressed_length > 0:
@@ -116,8 +120,7 @@ class Client(Protocol):
         self.send("login_start", {"username": "sigma", "playerUUID": "00000000-0000-0000-0000-000000000000"})
 
     def packet_unhadeled(self, packet_name, data: dict):
-        data.pop("raw")
-        print(packet_name, data)
+        pass
 
     def packet_login_compress(self, data):
         self.compression_threshold = data["threshold"]
@@ -129,11 +132,6 @@ class Client(Protocol):
     def packet_finish_configuration(self, data):
         self.send("finish_configuration")
         self.switch_state("play")
-
-    def packet_configuration_tags(self, data):
-        print(data)
-        pass # i have no idea what this is but it spamms my terminal so GET OUT
-
 
 async def main():
     with open("minecraft-data/data/pc/1.20.3/protocol.json", "r") as f:
