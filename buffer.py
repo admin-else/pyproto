@@ -10,6 +10,7 @@ Reasons why i hate protodef
 import struct
 import uuid
 from mutf8.mutf8 import encode_modified_utf8, decode_modified_utf8
+import re
 
 MAX_VARNUM_LEN = 10
 NBT_TYPE_MAP = {
@@ -28,6 +29,12 @@ NBT_TYPE_MAP = {
     12: "long_array"
 }
 
+UNPACK_SWITCH_SPECIAL_VALUES = {
+    "True": "true", 
+    "False": "false"
+}
+
+HEX_NUM_REGEX = r"0[xX][0-9a-fA-F]+"
 
 def to_snake_case(s: str):
     out = ""
@@ -53,6 +60,7 @@ class Buffer:
             self.data = data
         if types:
             self.types = types
+        self.fix_names()
 
     def pack_bytes(self, data):
         self.data += data
@@ -67,6 +75,17 @@ class Buffer:
         self.data = b""
         self.pos = 0
 
+    def save(self):
+        self.data = self.data[self.pos:]
+        self.pos = 0
+
+    def restore(self):
+        self.pos = 0
+
+    def discard(self):
+        self.pos = len(self.buff)
+
+
     def __len__(self):
         return len(self.data)
 
@@ -74,8 +93,8 @@ class Buffer:
         if lenght and len(self) - self.pos < lenght:
             raise IndexError("buffer not big egnouth")
 
-        data = self.data[self.pos : self.pos + lenght if lenght else None]
-        self.pos = self.pos+lenght if lenght else len(self)
+        data = self.data[self.pos : self.pos + lenght if lenght is not None else None]
+        self.pos = self.pos+lenght if lenght is not None else len(self)
         return data
 
     def pack_c(self, fmt, *fields):
@@ -161,10 +180,10 @@ class Buffer:
     def pack_void(self):
         pass
 
-    def unpack_UUID(self):
+    def unpack_uuid(self):
         return uuid.UUID(bytes=self.unpack_bytes(16)).hex
 
-    def pack_UUID(self, data):
+    def pack_uuid(self, data):
         self.pack_bytes(uuid.UUID(hex=data).bytes)
 
     def pack_varnum(self, number, max_bits):
@@ -172,7 +191,7 @@ class Buffer:
         number_max = +1 << (max_bits - 1)
         if not (number_min <= number < number_max):
             raise ValueError(
-                f"varnum does not fit in range: {number_min:d} <= {number:d} < {number_max:d}"
+                f"varnum does not fit in range: {number_min:_} <= {number:_} < {number_max:_}"
             )
 
         if number < 0:
@@ -181,14 +200,14 @@ class Buffer:
         for _ in range(10):
             b = number & 0x7F
             number >>= 7
-            self.pack_c("B", b | (0x80 if number > 0 else 0))
+            self.pack_u8(b | (0x80 if number > 0 else 0))
             if number == 0:
                 break
 
     def unpack_varnum(self, max_bits):
         number = 0
         for i in range(10):
-            b = self.unpack_c("B")
+            b = self.unpack_u8()
             number |= (b & 0x7F) << 7 * i
             if not b & 0x80:
                 break
@@ -200,7 +219,7 @@ class Buffer:
         number_max = +1 << (max_bits - 1)
         if not (number_min <= number < number_max):
             raise ValueError(
-                f"varnum does not fit in range: {number_min:d} <= {number:d} < {number_max:d}"
+                f"varnum does not fit in range: {number_min:_} <= {number:_} < {number_max:_}"
             )
 
         return number
@@ -217,10 +236,10 @@ class Buffer:
     def pack_varlong(self, data):
         self.pack_varnum(data, 64)
 
-    def unpack_restBuffer(self):
+    def unpack_rest_buffer(self):
         return self.unpack_bytes()
     
-    def pack_restBuffer(self, data):
+    def pack_rest_buffer(self, data):
         self.pack_bytes(data)
 
     # protodef stuff
@@ -274,7 +293,8 @@ class Buffer:
         for field in protodef:
             data = self.unpack(field["type"])
             if field.get("anon", False):
-                ret.update(data)
+                if type(data) is dict:
+                    ret.update(data)
             else:
                 ret[field["name"]] = data
         self.container_stack.pop()
@@ -289,7 +309,9 @@ class Buffer:
 
 
     def unpack_switch(self, protodef):
-        return self.unpack(protodef["fields"][str(self.get_var(protodef["compareTo"]))])
+        data = str(self.get_var(protodef["compareTo"]))
+        data = UNPACK_SWITCH_SPECIAL_VALUES.get(data, data) # returns fixed value if not present return normal value
+        return self.unpack(protodef["fields"].get(data, protodef.get("default")))
 
     def pack_switch(self, protodef, data):
         val = str(self.get_var(protodef["compareTo"]))
@@ -362,7 +384,10 @@ class Buffer:
             self.pack(protodef["type"], element)
 
     def unpack_array(self, protodef):
-        lenght = getattr(self, "unpack_" + protodef["countType"])()
+        if "countType" in protodef:
+            lenght = getattr(self, "unpack_" + protodef["countType"])()
+        elif "count" in protodef:
+            lenght = self.get_var(protodef["count"])
         ret = []
         for _ in range(lenght):
             ret.append(self.unpack(protodef["type"]))
@@ -415,10 +440,14 @@ class Buffer:
                 self.data[old_pos] |= 0x80
 
     def unpack_mapper(self, protodef):
-        data = getattr(self, "unpack_" + protodef["type"])()
-        for mapping in protodef["mappings"]:
-            if eval(mapping) == data: # ik eval bad BUUUUTTT no
-                return protodef["mappings"][mapping]
+        data = str(getattr(self, "unpack_" + protodef["type"])())
+        for org_mapping in protodef["mappings"]:
+            mapping = org_mapping
+            if re.fullmatch(HEX_NUM_REGEX, mapping):
+                mapping = str(int(mapping, base=0))
+            if mapping == data: 
+                return protodef["mappings"][org_mapping]
+        raise KeyError("Not found")
 
     def pack_mapper(self, protodef, data):
         for mapping in protodef["mappings"]:
@@ -518,10 +547,10 @@ class Buffer:
         nbt_type = NBT_TYPE_MAP[self.unpack_nbt_byte()]
         return {"type": nbt_type, "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
 
-    def unpack_anonymousNbt(self):
+    def unpack_anonymous_nbt(self):
         return self.unpack_nbt_anon()
     
-    def pack_anonymousNbt(self, data):
+    def pack_anonymous_nbt(self, data):
         self.pack_nbt_anon(data)
 
     def unpack_anon_optional_nbt(self):
@@ -535,3 +564,18 @@ class Buffer:
             self.pack_nbt_byte(0)
             return
         self.pack_anonymous_nbt(data)
+
+    # fuck camel case
+    def alias(self, new_name, old_name):
+        setattr(self, new_name, getattr(self, old_name))
+
+    def alias_pair(self, new_name, old_name):
+        self.alias(f"unpack_{new_name}", f"unpack_{old_name}")
+        self.alias(f"pack_{new_name}", f"pack_{old_name}")
+    
+    def fix_names(self):
+        self.alias_pair("UUID", "uuid")
+        self.alias_pair("entityMetadataLoop", "entity_metadata_loop")
+        self.alias_pair("anonymousNbt", "anonymous_nbt")
+        self.alias_pair("restBuffer", "rest_buffer")
+        self.alias_pair("anonOptionalNbt", "anon_optional_nbt")
