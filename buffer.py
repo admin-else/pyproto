@@ -34,7 +34,7 @@ UNPACK_SWITCH_SPECIAL_VALUES = {
     "False": "false"
 }
 
-HEX_NUM_REGEX = r"0[xX][0-9a-fA-F]+"
+HEX_NUM_REGEX = re.compile(r"0[xX][0-9a-fA-F]+")
 
 def to_snake_case(s: str):
     out = ""
