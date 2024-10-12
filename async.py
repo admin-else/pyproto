@@ -2,32 +2,39 @@ import asyncio
 from enum import Enum
 import json
 import os
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization, ciphers
+from cryptography.hazmat.primitives.ciphers import algorithms, modes
 import hashlib
 import zlib
 from buffer import Buffer
 import requests
+from cryptography.hazmat.primitives.asymmetric import padding
+
 
 class Direction(Enum):
-    client2server = "client2server" 
+    client2server = "client2server"
     server2client = "server2client"
 
-HANSHAKE_STATE_TO_ID = {
-    "play": 2,
-    "status": 1
-}
+
+HANSHAKE_STATE_TO_ID = {"play": 2, "status": 1}
+
 
 class OfflineModeExeption(Exception): ...
+
+
+class AuthExeption(Exception): ...
+
 
 class Protocol(asyncio.Protocol):
     compression_threshold = -1
     protocol = {}
     state = ""
-    cipher = None
     types2remote = {}
     types2me = {}
     direction: Direction
     protocol_version = 765
+    encryptor = None
+    decryptor = None
 
     def __init__(self, protocol):
         self.transport = None
@@ -42,8 +49,17 @@ class Protocol(asyncio.Protocol):
         self.types2remote = self.protocol["types"].copy()
         self.types2me = self.protocol["types"].copy()
         me, remote = self.direction.value.split("2")
-        self.types2me.update(self.protocol[state][f"to{me.title()}"]["types"]) # the .title is for camel case
+        self.types2me.update(
+            self.protocol[state][f"to{me.title()}"]["types"]
+        )  # the .title is for camel case
         self.types2remote.update(self.protocol[state][f"to{remote.title()}"]["types"])
+
+    def enable_encryption(self, shared_secret):
+        cipher = ciphers.Cipher(
+            algorithms.AES(shared_secret), modes.CFB8(shared_secret)
+        )
+        self.encryptor = cipher.encryptor()
+        self.decryptor = cipher.decryptor()
 
     def pack_data(self, data):
         b1 = Buffer(types=self.types2remote)
@@ -62,7 +78,10 @@ class Protocol(asyncio.Protocol):
         b3 = Buffer(types=self.types2remote)
         b3.pack_varint(len(b2))
         b3.pack_bytes(b2.unpack_bytes())
-        return b3.unpack_bytes()
+        data = b3.unpack_bytes()
+        if self.encryptor is not None:
+            data = self.encryptor.update(data)
+        return data
 
     def send(self, packet_name, data=None):
         self.transport.write(self.pack_data({"name": packet_name, "params": data}))
@@ -77,11 +96,15 @@ class Protocol(asyncio.Protocol):
         self.on_connection_lost(exc)
 
     def data_received(self, data):
-        asyncio.create_task(self.handle_data_received(data)) # needs to be async for the ready2recv flag
+        asyncio.create_task(
+            self.handle_data_received(data)
+        )  # needs to be async for the ready2recv flag
 
     async def handle_data_received(self, data):
         await self.ready2recv.wait()
         # TODO: Add encryption
+        if self.decryptor is not None:
+            data = self.decryptor.update(data)
 
         self.recvbuff.pack_bytes(data)
 
@@ -104,7 +127,7 @@ class Protocol(asyncio.Protocol):
             except IndexError:
                 self.recvbuff.restore()
                 return
-
+            print(f"<-{data["nam"]}")
             method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
             if method:
                 method(data["params"])
@@ -117,7 +140,7 @@ class Protocol(asyncio.Protocol):
 
     def on_connection(self):
         pass
-    
+
     def on_connection_lost(self, exc):
         pass
 
@@ -127,9 +150,11 @@ class Protocol(asyncio.Protocol):
 
 class Client(Protocol):
     direction = Direction.client2server
-    handshake_server_host = "github.com/admin-else/pyproto" # can be anything does not really matter
+    handshake_server_host = (
+        "github.com/admin-else/pyproto"  # can be anything does not really matter
+    )
     handshake_server_port = 25565
-    next_state: str # can be play or status
+    next_state: str  # can be play or status
 
     def on_connection(self):
         self.switch_state("handshaking")
@@ -143,7 +168,7 @@ class Client(Protocol):
             },
         )
         self.on_handshake()
-    
+
     def on_handshake(self):
         pass
 
@@ -152,46 +177,61 @@ class SpawningClient(Client):
     direction = Direction.client2server
     next_state = "play"
     name: str
-    uuid: str # no dashes important
-    auth_server = "https://sessionserver.mojang.com/" # with / at the end
-    token: str | None = None # if none offline mode 
+    uuid: str  # no dashes important
+    auth_server = "https://sessionserver.mojang.com/"  # with / at the end
+    token: str | None = None  # if none offline mode
 
     def on_handshake(self):
         self.switch_state("login")
-        self.send(
-            "login_start",
-            {"username": self.name, "playerUUID": self.uuid}
-        )
+        self.send("login_start", {"username": self.name, "playerUUID": self.uuid})
 
     def packet_login_encryption_begin(self, data):
-        # TODO: Add should auth stuff here
-        
         if self.token is None:
             self.transport.close()
             raise OfflineModeExeption("Cannot join online mode server without token.")
 
-        self.shared_secret = os.urandom(16)
+        shared_secret = os.urandom(16)
         public_key = serialization.load_der_public_key(data["publicKey"])
-        
+
         sha1 = hashlib.sha1()
-        for data in (data["serverId"].encode("ascii"), self.shared_secret, data["publicKey"]):
-            sha1.update(data)
+        for contents in (
+            data["serverId"].encode("ascii"),
+            shared_secret,
+            data["publicKey"],
+        ):
+            sha1.update(contents)
 
         digest = int(sha1.hexdigest(), 16)
-        if digest >> 39*4 & 0x8:
-            digest = "-%x" % ((-digest) & (2**(40*4)-1))
+        if digest >> 39 * 4 & 0x8:
+            digest = "-%x" % ((-digest) & (2 ** (40 * 4) - 1))
         else:
             digest = "%x" % digest
 
-        requests.post(self.auth_server + "session/minecraft/join", json={
-            "accessToken": self.token,
-            "selectedProfile": self.uuid,
-            ""
-        })
+        r = requests.post(
+            self.auth_server + "session/minecraft/join",
+            json={
+                "accessToken": self.token,
+                "selectedProfile": self.uuid,
+                "serverID": digest,
+            },
+        )
 
-        
+        # if not r.ok:
+        #    self.transport.close()
+        #    raise AuthExeption(f"Join error {r.status_code}: {r.json()}")
 
-
+        self.enable_encryption(shared_secret)
+        self.send(
+            "encryption_begin",
+            {
+                "sharedSecret": public_key.encrypt(
+                    plaintext=shared_secret, padding=padding.PKCS1v15()
+                ),
+                "verifyToken": public_key.encrypt(
+                    plaintext=data["verifyToken"], padding=padding.PKCS1v15()
+                ),
+            },
+        )
 
     def packet_unhadeled(self, packet_name, data: dict):
         print(f"[{self.state}] {packet_name}: {data}")
@@ -210,6 +250,7 @@ class SpawningClient(Client):
     def packet_play_keep_alive(self, data):
         self.send("keep_alive", data)
 
+
 async def main():
     with open("minecraft-data/data/pc/1.20.3/protocol.json", "r") as f:
         proto = json.load(f)
@@ -219,6 +260,7 @@ async def main():
     client = SpawningClient(protocol=proto)
     client.name = "Admin_Else"
     client.uuid = "3632330d373742708e8f270e581c45db"
+    client.token = "eyJraWQiOiJhYzg0YSIsImFsZyI6IkhTMjU2In0.eyJ4dWlkIjoiMjUzNTQwODczNjU4Mzg2NyIsImFnZyI6IkFkdWx0Iiwic3ViIjoiZmFjYWQ2NjYtNGFiYS00MDU3LTlmOWQtMzQ5NDI2NDQ2MzAzIiwiYXV0aCI6IlhCT1giLCJucyI6ImRlZmF1bHQiLCJyb2xlcyI6W10sImlzcyI6ImF1dGhlbnRpY2F0aW9uIiwiZmxhZ3MiOlsidHdvZmFjdG9yYXV0aCIsIm1zYW1pZ3JhdGlvbl9zdGFnZTQiLCJvcmRlcnNfMjAyMiIsIm11bHRpcGxheWVyIl0sInByb2ZpbGVzIjp7Im1jIjoiMzYzMjMzMGQtMzczNy00MjcwLThlOGYtMjcwZTU4MWM0NWRiIn0sInBsYXRmb3JtIjoiVU5LTk9XTiIsInl1aWQiOiJkYWI0ZDRkMmYwNTc0N2FjZjE4OWExZTUxNTAzOWRjZCIsIm5iZiI6MTcyODM0MjA4NiwiZXhwIjoxNzI4NDI4NDg2LCJpYXQiOjE3MjgzNDIwODZ9.mbjq6GklECmg5lK1_aE2u7bJILdqfNBfaEPJGvvdEJY"
 
     await loop.create_connection(lambda: client, "127.0.0.1", 25565)
     await client.disconnected.wait()
