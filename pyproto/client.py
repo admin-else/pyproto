@@ -50,7 +50,10 @@ class StatusClient(Client):
 
 class SpawningClient(Client):
     next_state = 2
-
+    profile = {
+        "name": "Pyproto",
+        "id": "00000000000000000000000000000000"
+    }
     def on_handshake(self):
         self.switch_state("login")
         self.send(
