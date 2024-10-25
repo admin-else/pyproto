@@ -1,5 +1,6 @@
 import hashlib
 import os
+import json
 
 import requests
 from pyproto.protocol import Protocol, Direction
@@ -42,22 +43,24 @@ class StatusClient(Client):
     next_state = 1
 
     def on_handshake(self):
+        self.switch_state("status")
         self.send("ping_start")
 
     def packet_status_server_info(self, data):
-        self.status_data = data
-
+        self.status_data = json.loads(data["response"])
+        self.transport.close()
 
 class SpawningClient(Client):
     next_state = 2
-
+    profile = {}
+    
     def on_handshake(self):
         self.switch_state("login")
         self.send(
             "login_start",
             {
-                "username": self.profile.get("name"),
-                "playerUUID": self.profile.get("id"),
+                "username": self.profile.get("name", "pyproto"),
+                "playerUUID": self.profile.get("id", "00000000000000000000000000000000"),
             },
         )
 

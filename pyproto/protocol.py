@@ -4,16 +4,17 @@ from cryptography.hazmat.primitives import ciphers
 from cryptography.hazmat.primitives.ciphers import algorithms, modes
 import zlib
 from pyproto.buffer import Buffer
+import pyproto.data
+
+DEFAULT_PROTO_VERS = 765 # why no reason
 
 class Direction(Enum):
     client2server = "client2server"
     server2client = "server2client"
 
-
 class OfflineModeExeption(Exception): ...
 
 class AuthExeption(Exception): ...
-
 
 class Protocol(asyncio.Protocol):
     compression_threshold = -1
@@ -26,9 +27,21 @@ class Protocol(asyncio.Protocol):
     encryptor = None
     decryptor = None
 
-    def __init__(self, protocol):
+    def get_protocol(self, protocol_version=None, version=None):
+        if not (protocol_version or version):
+            protocol_version = DEFAULT_PROTO_VERS
+
+        if protocol_version:
+            data = [version["minecraftVersion"] for version in pyproto.data.common("protocolVersions") if version["version"] == protocol_version]
+            if not data:
+                raise ValueError(f"Did not find protocol version {protocol_version}.")
+            version = data[0]
+
+        return pyproto.data.get(version, "protocol")
+
+    def __init__(self, protocol_version=None, version=None):
         self.transport = None
-        self.protocol = protocol
+        self.protocol = self.get_protocol(protocol_version, version)
         self.loop = asyncio.get_event_loop()
         self.ready2recv = asyncio.Event()
         self.disconnected = asyncio.Event()

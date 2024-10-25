@@ -7,6 +7,7 @@ Reasons why i hate protodef
 5. UUID being UUID and not uuid
 
 """
+
 import struct
 import uuid
 from mutf8.mutf8 import encode_modified_utf8, decode_modified_utf8
@@ -26,15 +27,13 @@ NBT_TYPE_MAP = {
     9: "list",
     10: "compound",
     11: "int_array",
-    12: "long_array"
+    12: "long_array",
 }
 
-UNPACK_SWITCH_SPECIAL_VALUES = {
-    "True": "true", 
-    "False": "false"
-}
+UNPACK_SWITCH_SPECIAL_VALUES = {"True": "true", "False": "false"}
 
 HEX_NUM_REGEX = re.compile(r"0[xX][0-9a-fA-F]+")
+
 
 def to_snake_case(s: str):
     out = ""
@@ -44,6 +43,7 @@ def to_snake_case(s: str):
         else:
             out += c
     return out
+
 
 def reverse_lookup(d, target_value):
     return [key for key, value in d.items() if value == target_value][0]
@@ -70,13 +70,13 @@ class Buffer:
         data = method(*args, **kwargs)
         self.pos = saved_pos
         return data
-    
+
     def reset(self):
         self.data = b""
         self.pos = 0
 
     def save(self):
-        self.data = self.data[self.pos:]
+        self.data = self.data[self.pos :]
         self.pos = 0
 
     def restore(self):
@@ -84,7 +84,6 @@ class Buffer:
 
     def discard(self):
         self.pos = len(self.buff)
-
 
     def __len__(self):
         return len(self.data)
@@ -94,7 +93,7 @@ class Buffer:
             raise IndexError("buffer not big egnouth")
 
         data = self.data[self.pos : self.pos + lenght if lenght is not None else None]
-        self.pos = self.pos+lenght if lenght is not None else len(self)
+        self.pos = self.pos + lenght if lenght is not None else len(self)
         return data
 
     def pack_c(self, fmt, *fields):
@@ -238,7 +237,7 @@ class Buffer:
 
     def unpack_rest_buffer(self):
         return self.unpack_bytes()
-    
+
     def pack_rest_buffer(self, data):
         self.pack_bytes(data)
 
@@ -250,7 +249,7 @@ class Buffer:
         for part in path.split("/"):
             if part == "..":
                 container_stack_index -= 1
-                data = self.container_stack[container_stack_index]                
+                data = self.container_stack[container_stack_index]
             else:
                 data = data[part]
         return data
@@ -262,29 +261,29 @@ class Buffer:
         else:
             type_name, data = protodef
 
-        protodef = self.types[type_name]
-        if protodef == "native":
+        protodef = self.types.get(type_name)
+        try:
             method = getattr(self, "unpack_" + type_name)
             if data is not None:
                 return method(data)
             return method()
-        else:
+        except AttributeError:
             return self.unpack(protodef)
 
     def pack(self, protodef, data):
-        upacked_protodef = None
+        next_protodef = None
         if type(protodef) is str:
             type_name = protodef
         else:
-            type_name, upacked_protodef = protodef
+            type_name, next_protodef = protodef
 
-        protodef = self.types[type_name]
-        if protodef == "native":
+        protodef = self.types.get(type_name)
+        try:
             method = getattr(self, "pack_" + type_name)
-            if upacked_protodef is not None:
-                return method(upacked_protodef, data)
+            if next_protodef is not None:
+                return method(next_protodef, data)
             return method(data)
-        else:
+        except AttributeError:
             self.pack(protodef, data)
 
     def unpack_container(self, protodef):
@@ -307,10 +306,11 @@ class Buffer:
             self.pack(field["type"], data[field["name"]])
         self.container_stack.pop()
 
-
     def unpack_switch(self, protodef):
         data = str(self.get_var(protodef["compareTo"]))
-        data = UNPACK_SWITCH_SPECIAL_VALUES.get(data, data) # returns fixed value if not present return normal value
+        data = UNPACK_SWITCH_SPECIAL_VALUES.get(
+            data, data
+        )  # returns fixed value if not present return normal value
         return self.unpack(protodef["fields"].get(data, protodef.get("default")))
 
     def pack_switch(self, protodef, data):
@@ -418,7 +418,7 @@ class Buffer:
                 break
             ret[index] = self.unpack(protodef["type"])
         return ret
-    
+
     def unpack_top_bit_set_terminated_array(self, protodef):
         ret = []
         while True:
@@ -429,9 +429,9 @@ class Buffer:
             self.data[saved_pos]
             if saved_byte & 0x80:
                 break
-        
+
         return ret
-    
+
     def pack_top_bit_set_terminated_array(self, protodef, data):
         for i, element in enumerate(data):
             old_pos = len(self)
@@ -445,7 +445,7 @@ class Buffer:
             mapping = org_mapping
             if re.fullmatch(HEX_NUM_REGEX, mapping):
                 mapping = str(int(mapping, base=0))
-            if mapping == data: 
+            if mapping == data:
                 return protodef["mappings"][org_mapping]
         raise KeyError("Not found")
 
@@ -454,7 +454,7 @@ class Buffer:
             if protodef["mappings"][mapping] == data:
                 getattr(self, "pack_" + protodef["type"])(eval(mapping))
 
-# NBT    
+    # NBT
 
     unpack_nbt_double = unpack_f64
     unpack_nbt_short = unpack_i16
@@ -477,7 +477,7 @@ class Buffer:
 
     def unpack_nbt_string(self):
         return decode_modified_utf8(self.unpack_bytes(self.unpack_nbt_short()))
-    
+
     def pack_nbt_string(self, data):
         data = encode_modified_utf8(data)
         self.pack_nbt_short(len(data))
@@ -487,19 +487,29 @@ class Buffer:
         unpack = getattr(self, f"unpack_nbt_{nbt_type}")
         amount = self.unpack_nbt_int()
         return [unpack() for _ in range(amount)]
-    
+
     def pack_nbt_num_array(self, nbt_type, data):
         self.pack_nbt_int(len(data))
         pack = getattr(self, f"pack_nbt_{nbt_type}")
         [pack(num) for num in data]
 
-    def unpack_nbt_byte_array(self): return self.unpack_nbt_num_array("byte")
-    def unpack_nbt_int_array(self): return self.unpack_nbt_num_array("int")
-    def unpack_nbt_long_array(self): return self.unpack_nbt_num_array("long")
+    def unpack_nbt_byte_array(self):
+        return self.unpack_nbt_num_array("byte")
 
-    def pack_nbt_byte_array(self, data): self.pack_nbt_num_array("byte", data)
-    def pack_nbt_int_array(self, data): self.pack_nbt_num_array("int", data)
-    def pack_nbt_long_array(self, data): self.pack_nbt_num_array("long", data)
+    def unpack_nbt_int_array(self):
+        return self.unpack_nbt_num_array("int")
+
+    def unpack_nbt_long_array(self):
+        return self.unpack_nbt_num_array("long")
+
+    def pack_nbt_byte_array(self, data):
+        self.pack_nbt_num_array("byte", data)
+
+    def pack_nbt_int_array(self, data):
+        self.pack_nbt_num_array("int", data)
+
+    def pack_nbt_long_array(self, data):
+        self.pack_nbt_num_array("long", data)
 
     def unpack_nbt_list(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
@@ -527,7 +537,7 @@ class Buffer:
                 break
             data.append(tag)
         return data
-        
+
     def pack_nbt(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
         self.pack_nbt_string(data["name"])
@@ -537,7 +547,11 @@ class Buffer:
         nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
         if nbt_type == "end":
             return {"type": "end", "name": None, "value": None}
-        return {"type": nbt_type, "name": self.unpack_nbt_string(), "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
+        return {
+            "type": nbt_type,
+            "name": self.unpack_nbt_string(),
+            "value": getattr(self, f"unpack_nbt_{nbt_type}")(),
+        }
 
     def pack_nbt_anon(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
@@ -549,7 +563,7 @@ class Buffer:
 
     def unpack_anonymous_nbt(self):
         return self.unpack_nbt_anon()
-    
+
     def pack_anonymous_nbt(self, data):
         self.pack_nbt_anon(data)
 
@@ -558,7 +572,7 @@ class Buffer:
             self.unpack_nbt_byte()
             return None
         return self.unpack_anonymous_nbt()
-    
+
     def pack_anon_optional_nbt(self, data):
         if not data:
             self.pack_nbt_byte(0)
@@ -572,7 +586,7 @@ class Buffer:
     def alias_pair(self, new_name, old_name):
         self.alias(f"unpack_{new_name}", f"unpack_{old_name}")
         self.alias(f"pack_{new_name}", f"pack_{old_name}")
-    
+
     def fix_names(self):
         self.alias_pair("UUID", "uuid")
         self.alias_pair("entityMetadataLoop", "entity_metadata_loop")
