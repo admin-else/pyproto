@@ -4,3 +4,4 @@ testdata/
 test_account.json
 pyproto/minecraft-data/
 minecraft-data/*
+server/

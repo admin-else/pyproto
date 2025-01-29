@@ -42,6 +42,20 @@ class Client(Protocol):
 class StatusClient(Client):
     next_state = 1
 
+    def __init__(self, protocol_version=None, version=None):
+        super().__init__(protocol_version, version)
+        self.status_data = None
+
+    def on_packet2me(self, packet_name, data):
+        method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
+        if method:
+            method(data["params"])
+        else:
+            self.packet_unhandled(data["name"], data["params"])
+
+    def packet_unhandled(self, name, data):
+        pass
+
     def on_handshake(self):
         self.switch_state("status")
         self.send("ping_start")
@@ -50,17 +64,20 @@ class StatusClient(Client):
         self.status_data = json.loads(data["response"])
         self.transport.close()
 
+
 class SpawningClient(Client):
     next_state = 2
     profile = {}
-    
+
     def on_handshake(self):
         self.switch_state("login")
         self.send(
             "login_start",
             {
                 "username": self.profile.get("name", "pyproto"),
-                "playerUUID": self.profile.get("id", "00000000000000000000000000000000"),
+                "playerUUID": self.profile.get(
+                    "id", "00000000000000000000000000000000"
+                ),
             },
         )
 
@@ -123,6 +140,9 @@ class SpawningClient(Client):
     def packet_configuration_finish_configuration(self, data):
         self.send("finish_configuration")
         self.switch_state("play")
+    
+    def packet_configuration_ping(self, data):
+        self.send("pong", {"id": data["id"]})
 
     def packet_play_keep_alive(self, data):
         self.send("keep_alive", data)

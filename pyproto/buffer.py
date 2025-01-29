@@ -32,7 +32,9 @@ NBT_TYPE_MAP = {
 
 UNPACK_SWITCH_SPECIAL_VALUES = {"True": "true", "False": "false"}
 
-HEX_NUM_REGEX = re.compile(r"0[xX][0-9a-fA-F]+")
+NUM_REGEX = re.compile(
+    r"\b(0x[0-9a-fA-F]+|[0-9]+)\b"
+)  # thx i am not gud at regex: https://stackoverflow.com/questions/38247948/regular-expression-for-valid-decimal-or-hexadecimal-with-prefix
 
 
 def to_snake_case(s: str):
@@ -83,17 +85,17 @@ class Buffer:
         self.pos = 0
 
     def discard(self):
-        self.pos = len(self.buff)
+        self.pos = len(self.data)
 
     def __len__(self):
         return len(self.data)
 
-    def unpack_bytes(self, lenght=None):
-        if lenght and len(self) - self.pos < lenght:
-            raise IndexError("buffer not big egnouth")
+    def unpack_bytes(self, count=None):
+        if count and len(self) - self.pos < count:
+            raise IndexError("buffer not big enough")
 
-        data = self.data[self.pos : self.pos + lenght if lenght is not None else None]
-        self.pos = self.pos + lenght if lenght is not None else len(self)
+        data = self.data[self.pos : self.pos + count if count is not None else None]
+        self.pos = self.pos + count if count is not None else len(self)
         return data
 
     def pack_c(self, fmt, *fields):
@@ -262,13 +264,14 @@ class Buffer:
             type_name, data = protodef
 
         protodef = self.types.get(type_name)
-        try:
-            method = getattr(self, "unpack_" + type_name)
+        if not protodef:
+            raise ValueError(f"i cannot find the protodef for {type_name}")
+        method = getattr(self, "unpack_" + type_name, None)
+        if method:
             if data is not None:
                 return method(data)
             return method()
-        except AttributeError:
-            return self.unpack(protodef)
+        return self.unpack(protodef)
 
     def pack(self, protodef, data):
         next_protodef = None
@@ -318,11 +321,11 @@ class Buffer:
         self.pack(protodef["fields"][val], data)
 
     def pack_pstring(self, protodef, data):
-        getattr(self, "pack_" + protodef["countType"])(len(data))
+        self.pack(protodef["countType"], len(data))
         self.pack_bytes(data.encode("utf-8"))
 
     def unpack_pstring(self, protodef):
-        lenght = getattr(self, "unpack_" + protodef["countType"])()
+        lenght = self.unpack(protodef["countType"])
         return str(self.unpack_bytes(lenght), encoding="utf-8")
 
     def unpack_option(self, protodef):
@@ -379,29 +382,29 @@ class Buffer:
         funcmap[total_size](ret)
 
     def pack_array(self, protodef, data):
-        getattr(self, "pack_" + protodef["countType"])(len(data))
+        self.pack(protodef["countType"], len(data))
         for element in data:
             self.pack(protodef["type"], element)
 
     def unpack_array(self, protodef):
         if "countType" in protodef:
-            lenght = getattr(self, "unpack_" + protodef["countType"])()
+            count = self.unpack(protodef["countType"])
         elif "count" in protodef:
-            lenght = self.get_var(protodef["count"])
+            count = self.get_var(protodef["count"])
         ret = []
-        for _ in range(lenght):
+        for _ in range(count):
             ret.append(self.unpack(protodef["type"]))
         return ret
 
     def unpack_buffer(self, protodef):
-        lenght = protodef.get("count", None)
-        if lenght is None:
-            lenght = getattr(self, "unpack_" + protodef["countType"])()
-        return self.unpack_bytes(lenght)
+        count = protodef.get("count", None)
+        if count is None:
+            count = self.unpack(protodef["countType"])
+        return self.unpack_bytes(count)
 
     def pack_buffer(self, protodef, data):
         if "countType" in protodef:
-            getattr(self, "pack_" + protodef["countType"])(len(data))
+            self.pack(protodef["countType"], len(data))
         self.pack_bytes(data)
 
     def pack_entity_metadata_loop(self, protodef, data):
@@ -422,11 +425,9 @@ class Buffer:
     def unpack_top_bit_set_terminated_array(self, protodef):
         ret = []
         while True:
-            saved_pos = self.pos
             saved_byte = self.data[self.pos]
             self.data[self.pos] &= 0x7F
             ret.append(self.unpack(protodef["type"]))
-            self.data[saved_pos]
             if saved_byte & 0x80:
                 break
 
@@ -440,10 +441,10 @@ class Buffer:
                 self.data[old_pos] |= 0x80
 
     def unpack_mapper(self, protodef):
-        data = str(getattr(self, "unpack_" + protodef["type"])())
+        data = str(self.unpack(protodef["type"]))
         for org_mapping in protodef["mappings"]:
             mapping = org_mapping
-            if re.fullmatch(HEX_NUM_REGEX, mapping):
+            if re.fullmatch(NUM_REGEX, mapping):
                 mapping = str(int(mapping, base=0))
             if mapping == data:
                 return protodef["mappings"][org_mapping]
@@ -452,7 +453,9 @@ class Buffer:
     def pack_mapper(self, protodef, data):
         for mapping in protodef["mappings"]:
             if protodef["mappings"][mapping] == data:
-                getattr(self, "pack_" + protodef["type"])(eval(mapping))
+                if re.fullmatch(NUM_REGEX, mapping):
+                    mapping = int(mapping, base=0)
+                self.pack(protodef["type"], mapping)
 
     # NBT
 
@@ -541,7 +544,7 @@ class Buffer:
     def pack_nbt(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
         self.pack_nbt_string(data["name"])
-        getattr(self, f"unpack_nbt_{data["type"]}")(data["value"])
+        self.pack("nbt_"+data["type"], data["value"])
 
     def unpack_nbt(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
@@ -550,16 +553,16 @@ class Buffer:
         return {
             "type": nbt_type,
             "name": self.unpack_nbt_string(),
-            "value": getattr(self, f"unpack_nbt_{nbt_type}")(),
+            "value": self.unpack("nbt_"+nbt_type)
         }
 
     def pack_nbt_anon(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
-        getattr(self, f"unpack_nbt_{data["type"]}")(data["value"])
+        self.pack("nbt_"+data["type"], data["value"])
 
     def unpack_nbt_anon(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_nbt_byte()]
-        return {"type": nbt_type, "value": getattr(self, f"unpack_nbt_{nbt_type}")()}
+        return {"type": nbt_type, "value": self.unpack("nbt_"+nbt_type)}
 
     def unpack_anonymous_nbt(self):
         return self.unpack_nbt_anon()

@@ -14,7 +14,7 @@ class Base64Encoder(json.JSONEncoder):
 class ScrapingClient(SpawningClient):
     data = {}
 
-    def packet_unhadeled(self, packet_name, data):
+    def packet_unhandled(self, packet_name, data):
         self.data[packet_name] = data
 
     def packet_play_map_chunk(self, _):
