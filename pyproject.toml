@@ -1,0 +1,12 @@
+[tool.poetry]
+name = "pyproto"
+version = "0.1.0"
+description = "A python libary for the minecraft protocol."
+authors = ["Admin Else"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
