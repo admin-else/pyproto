@@ -52,16 +52,12 @@ def reverse_lookup(d, target_value):
 
 
 class Buffer:
-    data = b""
     pos = 0
-    types = {}
     container_stack = []
 
-    def __init__(self, data: bytes | None = None, types=None) -> None:
-        if data:
-            self.data = data
-        if types:
-            self.types = types
+    def __init__(self, data: bytes  = b"", types={}) -> None:
+        self.data = data
+        self.types = types
         self.fix_names()
 
     def pack_bytes(self, data):

@@ -18,7 +18,7 @@ class AuthException(Exception): ...
 class Protocol(asyncio.Protocol):
     compression_threshold = -1
     protocol = {}
-    state = "offline"
+    state = "handshaking"
     types2remote = {}
     types2me = {}
     direction: Direction
@@ -37,6 +37,7 @@ class Protocol(asyncio.Protocol):
     def load_protocol(self, protocol_version):
         self.protocol, self.protocol_version, self.version_name = pyproto.data.get_protocol(protocol_version)
         self.protocol["types"]["mapper"] = "native"
+        self.switch_state(self.state)
 
     def switch_state(self, state):
         old_state = self.state

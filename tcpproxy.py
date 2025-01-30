@@ -1,34 +1,37 @@
-from asyncio import get_event_loop, run
-import asyncio
-from pyproto.client import Client
-from pyproto.protocol import Direction, Protocol
-from pyproto.server import Server
+from asyncio import Protocol, get_event_loop, run, run_coroutine_threadsafe
 
 class ProxyTarget(Protocol):
-    direction = Direction.server2client
-    
-    def __init__(self, proxy, protocol_version=None):
-        super().__init__(protocol_version)
+    def __init__(self, proxy):
         self.proxy = proxy
 
-class Proxy(Server):
-    direction = Direction.server2client
+    def data_received(self, data):
+        print("S2C", data)
+        self.proxy.transport.write(data)
 
-    def __init__(self, host, port, protocol_version=None):
-        super().__init__(protocol_version)
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def connection_lost(self, exc):
+        self.proxy.transport.close()
+
+class Proxy(Protocol):
+    def __init__(self, host, port):
         self.target_host = host
         self.target_port = port
         self.target_client = None
 
-    def on_connection(self):
-        asyncio.create_task(self.connect_to_target())
+    def connection_made(self, transport):
+        self.transport = transport
+        run_coroutine_threadsafe(self.connect_to_target(), get_event_loop())
 
     async def connect_to_target(self):
         loop = get_event_loop()
         _, self.target_client = await loop.create_connection(lambda: ProxyTarget(self), self.target_host, self.target_port)
     
-    def on_packet2me(self, data):
-        self.target_client.send(data["name"], data["params"])
+    def data_received(self, data):
+        print("C2S", data)
+        if self.target_client:
+            self.target_client.transport.write(data)
 
     def connection_lost(self, exc):
         if self.target_client:

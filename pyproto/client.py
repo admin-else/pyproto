@@ -16,20 +16,18 @@ class AuthExeption(Exception): ...
 
 class Client(Protocol):
     direction = Direction.client2server
-    handshake_server_host = (
-        "github.com/admin-else/pyproto"  # can be anything does not really matter
-    )
-    handshake_server_port = 25565
     next_state: int  # can be play or status
 
     def on_connection(self):
-        self.switch_state("handshaking")
+        host, port, *_ = self.transport.get_extra_info(
+            "sockname"
+        )  # *_ for ipv6 see https://docs.python.org/3/library/socket.html#socket-families
         self.send(
             "set_protocol",
             {
                 "protocolVersion": self.protocol_version,
-                "serverHost": self.handshake_server_host,
-                "serverPort": self.handshake_server_port,
+                "serverHost": host,
+                "serverPort": port,
                 "nextState": self.next_state,
             },
         )
@@ -46,7 +44,7 @@ class StatusClient(Client):
         super().__init__(protocol_version, version)
         self.status_data = None
 
-    def on_packet2me(self, packet_name, data):
+    def on_packet2me(self, data):
         method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
         if method:
             method(data["params"])
@@ -140,7 +138,7 @@ class SpawningClient(Client):
     def packet_configuration_finish_configuration(self, data):
         self.send("finish_configuration")
         self.switch_state("play")
-    
+
     def packet_configuration_ping(self, data):
         self.send("pong", {"id": data["id"]})
 

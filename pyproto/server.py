@@ -5,9 +5,6 @@ from pyproto.protocol import Direction, Protocol
 class Server(Protocol):
     direction = Direction.server2client
 
-    def on_connection(self):
-        self.switch_state("handshaking")
-
     def on_packet2me(self, data):
         method = getattr(self, f"packet_{self.state}_{data["name"]}", None)
         if method is not None:
