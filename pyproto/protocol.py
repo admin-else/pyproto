@@ -4,7 +4,7 @@ from enum import Enum
 from cryptography.hazmat.primitives import ciphers
 from cryptography.hazmat.primitives.ciphers import algorithms, modes
 import zlib
-from pyproto.buffer import Buffer
+from pyproto.buffer import Buffer, BufferOverrunError
 import pyproto.data
 
 class Direction(Enum):
@@ -88,7 +88,10 @@ class Protocol(asyncio.Protocol):
             data = {}
         data = {"name": packet_name, "params": data}
         self.on_packet2remote(data)
-        self.transport.write(self.pack_data(data))
+        byte_data = self.pack_data(data)
+        print(byte_data)
+        self.transport.write(byte_data)
+
 
     def connection_made(self, transport):
         self.transport = transport
@@ -129,7 +132,8 @@ class Protocol(asyncio.Protocol):
                 data = buff.unpack("packet")
             #except Exception as e:
             #    print(e)
-            except IndexError:
+            except NotImplementedError: #BufferOverrunError:
+                print("incomplete", self.recv_buff.data)
                 self.recv_buff.restore()
                 return
             

@@ -13,6 +13,10 @@ import uuid
 from mutf8.mutf8 import encode_modified_utf8, decode_modified_utf8
 import re
 
+
+class BufferOverrunError(Exception): ...
+
+
 MAX_VARNUM_LEN = 10
 NBT_TYPE_MAP = {
     0: "end",
@@ -55,7 +59,7 @@ class Buffer:
     pos = 0
     container_stack = []
 
-    def __init__(self, data: bytes  = b"", types={}) -> None:
+    def __init__(self, data: bytes = b"", types={}) -> None:
         self.data = data
         self.types = types
         self.fix_names()
@@ -88,7 +92,7 @@ class Buffer:
 
     def unpack_bytes(self, count=None):
         if count and len(self) - self.pos < count:
-            raise IndexError("buffer not big enough")
+            raise BufferOverrunError("buffer not big enough")
 
         data = self.data[self.pos : self.pos + count if count is not None else None]
         self.pos = self.pos + count if count is not None else len(self)
@@ -540,7 +544,7 @@ class Buffer:
     def pack_nbt(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
         self.pack_nbt_string(data["name"])
-        self.pack("nbt_"+data["type"], data["value"])
+        self.pack("nbt_" + data["type"], data["value"])
 
     def unpack_nbt(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_i8()]
@@ -549,16 +553,16 @@ class Buffer:
         return {
             "type": nbt_type,
             "name": self.unpack_nbt_string(),
-            "value": self.unpack("nbt_"+nbt_type)
+            "value": self.unpack("nbt_" + nbt_type),
         }
 
     def pack_nbt_anon(self, data):
         self.pack_nbt_byte(reverse_lookup(NBT_TYPE_MAP, data["type"]))
-        self.pack("nbt_"+data["type"], data["value"])
+        self.pack("nbt_" + data["type"], data["value"])
 
     def unpack_nbt_anon(self):
         nbt_type = NBT_TYPE_MAP[self.unpack_nbt_byte()]
-        return {"type": nbt_type, "value": self.unpack("nbt_"+nbt_type)}
+        return {"type": nbt_type, "value": self.unpack("nbt_" + nbt_type)}
 
     def unpack_anonymous_nbt(self):
         return self.unpack_nbt_anon()
